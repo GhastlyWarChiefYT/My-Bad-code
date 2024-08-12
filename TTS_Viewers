@@ -1,0 +1,209 @@
+import os
+import time
+import gtts
+import irc.bot
+import io
+import pygame
+import logging
+import obswebsocket
+from obswebsocket import requests
+from datetime import datetime, timedelta
+
+# Setup logging
+logging.basicConfig(level=logging.DEBUG)
+
+# Directory where MP3 files will be saved
+MP3_SAVE_DIR = r"C:\Users\simon\OneDrive\Desktop\Obs Pictures\MP3 Files TTS"
+
+# Ensure the directory exists
+os.makedirs(MP3_SAVE_DIR, exist_ok=True)
+
+# Retrieve WebSocket password from environment variable
+OBS_WS_PASSWORD = os.getenv('OBS_WS_PASSWORD')
+if not OBS_WS_PASSWORD:
+    logging.error("OBS_WS_PASSWORD environment variable is not set")
+    raise ValueError("OBS_WS_PASSWORD environment variable is not set")
+
+# Initialize pygame mixer for audio playback
+try:
+    pygame.mixer.init()
+    logging.info("Pygame mixer initialized successfully.")
+except pygame.error as e:
+    logging.error(f"Failed to initialize pygame mixer: {e}")
+    raise
+
+# A set to keep track of recent messages
+recent_messages = set()
+# Time period to consider for recent messages (e.g., 1 minute)
+recent_message_period = timedelta(minutes=1)
+
+class TwitchBot(irc.bot.SingleServerIRCBot):
+    def __init__(self, server, port, channel, nickname, token):
+        irc.bot.SingleServerIRCBot.__init__(self, [(server, port, 'oauth:' + token)], nickname, nickname)
+        self.channel = channel
+        self.token = token
+        self.joined = False
+        self.ws = None  # Initialize WebSocket connection as None
+        self.connect_to_obs()  # Establish WebSocket connection
+
+    def connect_to_obs(self):
+        try:
+            self.ws = obswebsocket.obsws('localhost', 4444, OBS_WS_PASSWORD)
+            self.ws.connect()
+            logging.info("Connected to OBS WebSocket")
+        except Exception as e:
+            logging.error(f"Failed to connect to OBS WebSocket: {e}")
+            raise
+
+    def on_welcome(self, connection, event):
+        logging.info(f"Connected to server. Joining channel: {self.channel}")
+        connection.join(self.channel)
+
+    def on_join(self, connection, event):
+        if event.target == self.channel:
+            self.joined = True
+            logging.info(f"Successfully joined channel: {self.channel}")
+        else:
+            logging.error(f"Failed to join channel: {self.channel}. Event target: {event.target}")
+
+    def on_ready(self):
+        if not self.joined:
+            logging.error("Bot failed to join the channel.")
+        else:
+            logging.info(f"Bot is ready and joined the channel.")
+
+    def on_pubmsg(self, connection, event):
+        message = event.arguments[0]
+        user = event.source.nick.lower()  # Normalize the username to lowercase
+        logging.info(f"Message from {user}: {message}")
+
+        # Normalize all allowed users to lowercase
+        normalized_allowed_users = [allowed_user.lower() for allowed_user in allowed_users]
+
+        if user in normalized_allowed_users:
+            logging.info(f"User {user} is allowed.")
+            self.read_message(message, user)
+        else:
+            logging.warning(f"User {user} is not allowed.")
+
+    def read_message(self, message, user):
+        start_time = time.time()
+        logging.info(f"Attempting to read message: {message}")
+
+        # Check if the message was recently processed
+        now = datetime.now()
+        global recent_messages
+        recent_messages = {(msg, timestamp) for msg, timestamp in recent_messages if now - timestamp < recent_message_period}
+
+        if (message, now) in recent_messages:
+            logging.info("Message already processed recently. Skipping.")
+            return
+        
+        # Add current message to recent messages
+        recent_messages.add((message, now))
+        
+        lang = 'en'  # Default language
+        if user == "ghastlywarchief":
+            logging.info("Selecting language: German")
+            lang = 'de'
+        elif user == "xeizzeth":
+            logging.info("Selecting language: US English")
+            lang = 'en'
+        else:
+            logging.info("Selecting language: UK English")
+            lang = 'en-uk'
+        
+        try:
+            # Create TTS audio in-memory
+            tts_start_time = time.time()
+            tts = gtts.gTTS(text=message, lang=lang)
+            with io.BytesIO() as mp3_buffer:
+                tts.write_to_fp(mp3_buffer)
+                mp3_buffer.seek(0)
+
+                # Define the filename and path
+                temp_filename = os.path.join(MP3_SAVE_DIR, f"{datetime.now().strftime('%Y%m%d%H%M%S')}.mp3")
+                
+                # Save the MP3 file to the specified directory
+                with open(temp_filename, 'wb') as mp3_file:
+                    mp3_file.write(mp3_buffer.getvalue())
+            
+            tts_end_time = time.time()
+            logging.info(f"TTS Generation took {tts_end_time - tts_start_time:.2f} seconds")
+
+            # Update OBS with the newest media source
+            obs_update_start_time = time.time()
+            self.update_obs_media_source()
+            obs_update_end_time = time.time()
+            logging.info(f"OBS Media Source update took {obs_update_end_time - obs_update_start_time:.2f} seconds")
+            
+        except Exception as e:
+            logging.error(f"TTS Error: {e}")
+
+        end_time = time.time()
+        logging.info(f"Total processing time for message '{message}': {end_time - start_time:.2f} seconds")
+
+    def update_obs_media_source(self):
+        try:
+            # Find the newest MP3 file
+            mp3_files = [f for f in os.listdir(MP3_SAVE_DIR) if f.endswith('.mp3')]
+            if not mp3_files:
+                logging.info("No MP3 files found.")
+                return
+            
+            newest_file = max(mp3_files, key=lambda f: os.path.getmtime(os.path.join(MP3_SAVE_DIR, f)))
+            newest_file_path = os.path.join(MP3_SAVE_DIR, newest_file)
+
+            if not self.ws:
+                logging.error("WebSocket connection is not initialized.")
+                return
+
+            # Update or create a media source in OBS
+            response = self.ws.call(requests.SetSourceSettings(
+                sourceName='TWITCH CHAT TTS AUDIO',
+                sourceSettings={'local_file': newest_file_path, 'loop': False}
+            ))
+            if response.status:
+                logging.info(f"OBS Media Source updated successfully with file: {newest_file_path}")
+            else:
+                logging.error(f"Failed to update OBS Media Source: {response.error}")
+
+            # Play the media source
+            response = self.ws.call(requests.PlayPauseMedia(
+                sourceName='TWITCH CHAT TTS AUDIO',
+                play=True
+            ))
+            if response.status:
+                logging.info("OBS Media Source playback started successfully")
+            else:
+                logging.error(f"Failed to start playback: {response.error}")
+
+        except Exception as e:
+            logging.error(f"OBS WebSocket Error: {e}")
+
+    def on_error(self, connection, message):
+        logging.error(f"Error received: {message}")
+
+    def __del__(self):
+        if self.ws:
+            self.ws.disconnect()
+            logging.info("Disconnected from OBS WebSocket")
+
+if __name__ == "__main__":
+    server = 'irc.chat.twitch.tv'
+    port = 6667  # Use SSL port for a secure connection
+    channel = '#GhastlyWarChief'
+    nickname = 'Bot_Elias'
+    allowed_users = ["GhastlyWarChief", "imBoloFake", "Xeizzeth"]
+
+    token = os.getenv('TWITCH_OAUTH_TOKEN')
+    if not token:
+        logging.error("TWITCH_OAUTH_TOKEN environment variable is not set")
+        raise ValueError("TWITCH_OAUTH_TOKEN environment variable is not set")
+    
+    try:
+        bot = TwitchBot(server, port, channel, nickname, token)
+        logging.info("Starting bot...")
+        bot.start()
+    except Exception as e:
+        logging.error(f"Error: {e}")
