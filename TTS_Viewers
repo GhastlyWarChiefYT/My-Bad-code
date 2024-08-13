@@ -11,13 +11,20 @@ import soundfile as sf
 
 #####################################################
 #####################################################
-##### to honor the man that made this possible ######
+##### To honor the man that made this possible ######
 #################### samwhoo ########################
 #####################################################
 #####################################################
 
+# Define ANSI color codes
+class Color:
+    GREEN = '\033[92m'
+    RED = '\033[91m'
+    YELLOW = '\033[93m'
+    RESET = '\033[0m'
+
 # Setup logging
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.DEBUG, format='%(message)s')
 
 # Directory where MP3 files will be saved
 MP3_SAVE_DIR = r"C:\Users\simon\OneDrive\Desktop\Obs Pictures\MP3 Files TTS"
@@ -28,7 +35,7 @@ os.makedirs(MP3_SAVE_DIR, exist_ok=True)
 # Retrieve WebSocket password from environment variable
 OBS_WS_PASSWORD = os.getenv("OBS_WS_PASSWORD")
 if not OBS_WS_PASSWORD:
-    logging.error("OBS_WS_PASSWORD environment variable is not set")
+    logging.error(f"{Color.RED}OBS_WS_PASSWORD environment variable is not set{Color.RESET}")
     raise ValueError("OBS_WS_PASSWORD environment variable is not set")
 
 # A set to keep track of recent messages
@@ -36,34 +43,71 @@ recent_messages = set()
 # Time period to consider for recent messages (e.g., 1 minute)
 recent_message_period = timedelta(minutes=1)
 
+# Available languages for Google Text-to-Speech
+# The following are recommended voices that sound good when reading English text
+languages = {
+    "English (US)": "en",        # Default English (US) voice
+    "English (UK)": "en-uk",     # English (UK) voice
+    "German": "de",              # German voice
+    "French": "fr",              # French voice
+    "Spanish": "es",             # Spanish voice
+    "Italian": "it",             # Italian voice
+    "Dutch": "nl",               # Dutch voice
+    "Brazilian Portuguese": "pt-br"  # Brazilian Portuguese voice
+}
 
 class TwitchBot(irc.bot.SingleServerIRCBot):
     def __init__(self, server, port, channel, nickname, token):
         irc.bot.SingleServerIRCBot.__init__(
             self, [(server, port, "oauth:" + token)], nickname, nickname
         )
-        self.channel = channel
+        self.channel = channel.lower()  # Ensure channel name is lowercase
         self.token = token
         self.joined = False
 
     def on_welcome(self, connection, event):
-        logging.info(f"Connected to server. Joining channel: {self.channel}")
+        logging.info(f"{Color.GREEN}Connected to server. Joining channel: {self.channel}{Color.RESET}")
         connection.join(self.channel)
 
     def on_join(self, connection, event):
-        if event.target == self.channel:
+        if event.target.lower() == self.channel:  # Ensure event target is lowercase
             self.joined = True
-            logging.info(f"Successfully joined channel: {self.channel}")
+            logging.info(f"{Color.GREEN}Successfully joined channel: {self.channel}{Color.RESET}")
+            # Play the startup message after fully connected and ready
+            self.play_startup_message()
         else:
-            logging.error(
-                f"Failed to join channel: {self.channel}. Event target: {event.target}"
-            )
+            logging.error(f"{Color.RED}Failed to join channel: {self.channel}. Event target: {event.target.lower()}{Color.RESET}")
 
     def on_ready(self):
         if not self.joined:
-            logging.error("Bot failed to join the channel.")
+            logging.error(f"{Color.RED}Bot failed to join the channel.{Color.RESET}")
         else:
-            logging.info("Bot is ready and joined the channel.")
+            logging.info(f"{Color.GREEN}Bot is ready and joined the channel.{Color.RESET}")
+
+    def play_startup_message(self):
+        try:
+            # Generate the startup message MP3 file
+            tts_startup = gtts.gTTS(text="Twitch TTS is starting", lang='en')
+            startup_filename = os.path.join(MP3_SAVE_DIR, "startup_message.mp3")
+            with open(startup_filename, "wb") as f:
+                tts_startup.write_to_fp(f)
+
+            logging.info(f"{Color.GREEN}Startup message MP3 created at {startup_filename}{Color.RESET}")
+
+            # Verify that the file was created
+            if not os.path.isfile(startup_filename):
+                logging.error(f"{Color.RED}Startup message MP3 file was not created.{Color.RESET}")
+                return
+
+            # Load and play the audio file
+            data, fs = sf.read(startup_filename, dtype="float32")
+            logging.info(f"{Color.GREEN}Playing startup message.{Color.RESET}")
+            sd.play(data, fs, device=32)  # Use default device
+            sd.wait()
+            
+            logging.info(f"{Color.GREEN}Twitch TTS is starting.{Color.RESET}")
+        except Exception as e:
+            logging.error(f"{Color.RED}Error playing startup message: {e}{Color.RESET}")
 
     def on_pubmsg(self, connection, event):
         message = event.arguments[0]
@@ -76,10 +120,10 @@ class TwitchBot(irc.bot.SingleServerIRCBot):
         ]
 
         if user in normalized_allowed_users:
-            logging.info(f"User {user} is allowed.")
+            logging.info(f"{Color.GREEN}User {user} is allowed.{Color.RESET}")
             self.read_message(message, user)
         else:
-            logging.warning(f"User {user} is not allowed.")
+            logging.warning(f"{Color.RED}User {user} is not allowed.{Color.RESET}")
 
     def read_message(self, message, user):
         start_time = time.time()
@@ -95,7 +139,7 @@ class TwitchBot(irc.bot.SingleServerIRCBot):
         }
 
         if (message, now) in recent_messages:
-            logging.info("Message already processed recently. Skipping.")
+            logging.info(f"{Color.YELLOW}Message already processed recently. Skipping.{Color.RESET}")
             return
 
         # Add current message to recent messages
@@ -103,8 +147,8 @@ class TwitchBot(irc.bot.SingleServerIRCBot):
 
         lang = "en"  # Default language
         if user == "ghastlywarchief":
-            logging.info("Selecting language: German")
-            lang = "de"
+            logging.info("Selecting language: US English")
+            lang = "en"
         elif user == "imBoloFake":
             logging.info("Selecting language: US English")
             lang = "en"
@@ -128,39 +172,37 @@ class TwitchBot(irc.bot.SingleServerIRCBot):
                     mp3_file.write(mp3_buffer.getvalue())
 
                 data, fs = sf.read(temp_filename, dtype="float32")
-                sd.play(data, fs, device=32)
+                sd.play(data, fs, device=None)  # Use default device
                 sd.wait()
 
+                logging.info(f"{Color.GREEN}Successfully played the message.{Color.RESET}")
+
         except Exception as e:
-            logging.error(f"TTS Error: {e}")
+            logging.error(f"{Color.RED}TTS Error: {e}{Color.RESET}")
 
         end_time = time.time()
         logging.info(
-            f"Total processing time for message '{message}': {end_time - start_time:.2f} seconds"
+            f"{Color.GREEN}Total processing time for message '{message}': {end_time - start_time:.2f} seconds{Color.RESET}"
         )
 
     def on_error(self, connection, message):
-        logging.error(f"Error received: {message}")
-
+        logging.error(f"{Color.RED}Error received: {message}{Color.RESET}")
 
 if __name__ == "__main__":
     server = "irc.chat.twitch.tv"
-    port = 6667  # Use SSL port for a secure connection
-    channel = "#GhastlyWarChief"
+    port = 6667
+    channel = "#ghastlywarchief"  # Ensure the channel name is all lowercase
     nickname = "Bot_Elias"
-    allowed_users = ["GhastlyWarChief", "imBoloFake", "Xeizzeth", "samwhoo", "terudrag", "zenzidev", "tigeria_tiger", "markis5467"]
+    allowed_users = ["ghastlywarchief", "imbolognese", "xeizzeth", "samwhoo", "terudrag", "zenzidev", "tigeria_tiger", "markis5467"]
 
     token = os.getenv("TWITCH_OAUTH_TOKEN")
     if not token:
-        logging.error("TWITCH_OAUTH_TOKEN environment variable is not set")
-        raise ValueError("TWITCH_OAUTH_TOKEN environment variable is not set")
-
-    try:
-        bot = TwitchBot(server, port, channel, nickname, token)
-        logging.info("Starting bot...")
-        bot.start()
-    except Exception as e:
-        logging.error(f"Error: {e}")
-
-
-        
+        print(f"{Color.RED}TWITCH_OAUTH_TOKEN environment variable is not set{Color.RESET}")
+    else:
+        try:
+            # Start the bot
+            bot = TwitchBot(server, port, channel, nickname, token)
+            logging.info(f"{Color.GREEN}Starting bot...{Color.RESET}")
+            bot.start()
+        except Exception as e:
+            logging.error(f"{Color.RED}Error: {e}{Color.RESET}")
