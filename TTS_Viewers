@@ -102,7 +102,7 @@ class TwitchBot(irc.bot.SingleServerIRCBot):
             # Load and play the audio file
             data, fs = sf.read(startup_filename, dtype="float32")
             logging.info(f"{Color.GREEN}Playing startup message.{Color.RESET}")
-            sd.play(data, fs, device=32)  # Use default device
+            sd.play(data, fs, device=32)  # Use Device 32 (Virtual Audio Cable)!
             sd.wait()
             
             logging.info(f"{Color.GREEN}Twitch TTS is starting.{Color.RESET}")
@@ -172,7 +172,7 @@ class TwitchBot(irc.bot.SingleServerIRCBot):
                     mp3_file.write(mp3_buffer.getvalue())
 
                 data, fs = sf.read(temp_filename, dtype="float32")
-                sd.play(data, fs, device=None)  # Use default device
+                sd.play(data, fs, device=32)  # Use Device 32 (Virtual Audio Cable)!
                 sd.wait()
 
                 logging.info(f"{Color.GREEN}Successfully played the message.{Color.RESET}")
@@ -193,7 +193,7 @@ if __name__ == "__main__":
     port = 6667
     channel = "#ghastlywarchief"  # Ensure the channel name is all lowercase
     nickname = "Bot_Elias"
-    allowed_users = ["ghastlywarchief", "imbolognese", "xeizzeth", "samwhoo", "terudrag", "zenzidev", "tigeria_tiger", "markis5467"]
+    allowed_users = ["ghastlywarchief", "imbolofake", "xeizzeth", "samwhoo", "terudrag", "zenzidev", "tigeria_tiger", "markis5467", "Letsch_x"]
 
     token = os.getenv("TWITCH_OAUTH_TOKEN")
     if not token:
